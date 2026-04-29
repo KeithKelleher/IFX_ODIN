@@ -39,6 +39,8 @@ Each row is a protein-facing Pharos/TCRD concept. Data source checkboxes = inges
 | **DODiseaseParentEdge** | [x] Disease Ontology | `DODiseaseParentEdge` | not exported from merged graph; source-file DO tables populate `do_parent` / `ancestry_do` below            |
 | **ProteinDiseaseEdge** | [x] UniProt curated<br>[x] CTD <br>[x] JensenLab DISEASES <br>[x] DrugCentral Indication | `ProteinDiseaseEdge` | [x] `disease_type`<br>[x] `disease`<br>[x] `ncats_d2da`                                                     |
 | **TINXImportanceEdge** | [x] TIN-X *(protein-disease importance; Jensen-derived)* | `TINXImportanceEdge` | [x] `tinx_importance`                                                                                        |
+| **GwasTrait** | [x] TIGA | `GwasTrait` | no standalone TCRD table; trait content is duplicated via `ProteinGwasTraitEdge` into `tiga`                 |
+| **ProteinGwasTraitEdge** | [x] TIGA *(GWAS gene/trait associations; best-effort disease projection via `GwasTraitDiseaseEdge`)* | `ProteinGwasTraitEdge` | [x] `tiga`<br>[x] `tiga_provenance`                                                                          |
 | **Pathway** | [x] UniProt<br>[x] Reactome<br>[x] WikiPathways<br>[x] PathwayCommons | `Pathway` | no standalone TCRD table; pathway content is duplicated via `ProteinPathwayEdge` into `pathway`             |
 | **PathwayParentEdge** | [x] Reactome | `PathwayParentEdge` | not exported to legacy TCRD MySQL                                                                           |
 | **ProteinPathwayEdge** | [x] UniProt<br>[x] Reactome<br>[x] WikiPathways <br>[x] PathwayCommons  | `ProteinPathwayEdge` | [x] `pathway`                                                                                               |
@@ -72,7 +74,6 @@ These tables are populated directly from ontology source files during the TCRD b
 - maybe ClinGen - old pharos didn't have it, but maybe it's useful
 
 ### New Concepts
-- Tiga
 - Publications — NCBI, JensenLab
 - IDG Resources
 - NIH Target Lists
