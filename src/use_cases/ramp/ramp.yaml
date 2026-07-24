@@ -40,6 +40,17 @@ input_adapters:
     kwargs:
       data_source: pfocr:human_pathways:2025-07-01
 
+  - import: ./src/input_adapters/metabolite_harmonization/expasy.py
+    class: ExpasyEnzymeClassAdapter
+    kwargs:
+      data_source: expasy:enzyme:2026-06-10
+
+  - import: ./src/input_adapters/metabolite_harmonization/rhea.py
+    class: RheaReactionAdapter
+    kwargs:
+      data_source: rhea:reaction_bundle:141
+      uniprot_data_source: uniprot:human:2026_02
+
   - import: ./src/input_adapters/metabolite_harmonization/lipidmaps.py
     class: LipidMapsMetaboliteEquivalenceAdapter
     kwargs:
