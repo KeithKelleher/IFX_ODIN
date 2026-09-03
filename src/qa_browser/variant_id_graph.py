@@ -43,6 +43,7 @@ _singleton_lock = threading.Lock()
 
 DEFAULT_VARIANT_COLUMNS = [
     "variant_id",
+    "variant_key",
     "primary_id",
     "name",
     "biolink_category",
@@ -54,16 +55,30 @@ DEFAULT_VARIANT_COLUMNS = [
     "uniprot_entry_name",
     "uniprot_feature_id",
     "protein_name",
+    "omim_gene_mim",
+    "omim_allelic_variant_id",
+    "clinvar_rcv",
+    "mutation",
     "gene_symbol",
     "gene_curie",
+    "hgnc_id",
     "assembly",
     "chromosome",
     "position",
+    "reference_allele",
+    "alternate_allele",
     "risk_allele",
+    "protein_position",
+    "reference_amino_acid",
+    "alternate_amino_acid",
+    "amino_acid_change",
     "clinical_significance",
+    "clinical_significance_class",
     "source_review_status",
     "review_status",
+    "review_strength_score",
     "source_namespaces",
+    "source_record_count",
     "equivalence_scope",
     "quality_note",
 ]
@@ -106,15 +121,20 @@ def _variant_lookup_aliases(value: str) -> set[str]:
         aliases.add(text.split(":", 1)[1])
     elif lower.startswith(("uniprotkb:", "uniprotvar:")):
         aliases.add(text.split(":", 1)[1])
-    elif re.fullmatch(r"[A-Z0-9]{1,10}-?\d*", text, re.I):
+    elif re.fullmatch(r"[A-Z]\d[A-Z0-9]{3,7}", text, re.I):
+        # UniProt accession pattern (e.g. P02649, Q9Y6K9)
         aliases.add(f"UniProtKB:{text.upper()}")
+    elif re.fullmatch(r"VAR_\d+", text, re.I):
+        # UniProt feature ID pattern (e.g. VAR_000664)
         aliases.add(f"UniProtVAR:{text.upper()}")
     return {a for a in aliases if a}
 
 
 def _add_variant_index(data: VariantGraphData, key: str, variant_id: str) -> None:
     for alias in _variant_lookup_aliases(key):
-        data.ids_to_variants[alias].append(variant_id)
+        alias_list = data.ids_to_variants[alias]
+        if variant_id not in alias_list:
+            alias_list.append(variant_id)
 
 
 def _index_node(data: VariantGraphData, node: dict[str, str]) -> None:
@@ -127,12 +147,15 @@ def _index_node(data: VariantGraphData, node: dict[str, str]) -> None:
         variant_id,
         node.get("variant_key", ""),
         node.get("primary_id", ""),
+        node.get("name", ""),
         node.get("dbsnp_id", ""),
         node.get("clinvar_variation_id", ""),
         node.get("clinvar_allele_id", ""),
+        node.get("clinvar_rcv", ""),
         node.get("uniprot_id", ""),
         node.get("uniprot_entry_name", ""),
         node.get("uniprot_feature_id", ""),
+        node.get("protein_name", ""),
         node.get("gene_symbol", ""),
     }
     for key in keys:
@@ -398,3 +421,133 @@ def export_variants(
     for row in rows:
         writer.writerow({col: row.get(col, "") for col in selected})
     return buf.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# Version diff helpers
+# ---------------------------------------------------------------------------
+
+def load_variant_version_data(data_dir: str | Path) -> VariantGraphData:
+    """Load any versioned variant app_graph directory into a VariantGraphData."""
+    data_dir = Path(data_dir)
+    key = str(data_dir.resolve())
+    with _singleton_lock:
+        if key in _singletons:
+            return _singletons[key]
+        data = VariantGraphData()
+        manifest_path = data_dir / "manifest.json"
+        if manifest_path.exists():
+            try:
+                data.manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                data.manifest = {}
+        for node in _read_tsv(data_dir / "variant_nodes.tsv"):
+            _index_node(data, node)
+        data.edges = _read_tsv(data_dir / "variant_edges.tsv")
+        for edge in data.edges:
+            source_id = edge.get("source_id", "")
+            if source_id:
+                data.edges_by_variant[source_id].append(edge)
+        data.source_catalog = _read_tsv(data_dir / "variant_source_catalog.tsv")
+        _singletons[key] = data
+        return data
+
+
+def compute_variant_version_diff(
+    current: VariantGraphData,
+    baseline: VariantGraphData,
+) -> dict[str, Any]:
+    """Compute delta between two versioned variant datasets."""
+    current_ids = set(current.nodes_by_id.keys())
+    baseline_ids = set(baseline.nodes_by_id.keys())
+
+    added_ids = sorted(current_ids - baseline_ids)
+    removed_ids = sorted(baseline_ids - current_ids)
+    shared_ids = current_ids & baseline_ids
+
+    name_changes: list[dict[str, str]] = []
+    clinical_significance_changes: list[dict[str, str]] = []
+    variant_type_changes: list[dict[str, str]] = []
+
+    for vid in sorted(shared_ids):
+        cur = current.nodes_by_id[vid]
+        base = baseline.nodes_by_id[vid]
+
+        for field, changes_list in [
+            ("name", name_changes),
+            ("clinical_significance", clinical_significance_changes),
+            ("variant_type", variant_type_changes),
+        ]:
+            old_val = base.get(field, "")
+            new_val = cur.get(field, "")
+            if old_val != new_val:
+                changes_list.append({
+                    "variant_id": vid,
+                    "gene_symbol": cur.get("gene_symbol") or base.get("gene_symbol", ""),
+                    "name": cur.get("name") or base.get("name", ""),
+                    "old_value": old_val,
+                    "new_value": new_val,
+                })
+
+    # Edge diffs
+    def _edge_key(e: dict[str, str]) -> tuple[str, str, str]:
+        return (e.get("source_id", ""), e.get("target_id", ""), e.get("relation_kind", ""))
+
+    current_edge_keys = {_edge_key(e) for e in current.edges}
+    baseline_edge_keys = {_edge_key(e) for e in baseline.edges}
+
+    # Source version changes
+    cur_src = {row.get("source", ""): row for row in current.source_catalog}
+    base_src = {row.get("source", ""): row for row in baseline.source_catalog}
+    source_version_changes = []
+    for src in sorted(set(cur_src) | set(base_src)):
+        old_v = base_src.get(src, {}).get("version", "")
+        new_v = cur_src.get(src, {}).get("version", "")
+        if old_v != new_v:
+            source_version_changes.append({
+                "source_name": src,
+                "old_source_version": old_v,
+                "new_source_version": new_v,
+            })
+
+    node_fields = ("variant_id", "primary_id", "name", "variant_type", "gene_symbol", "clinical_significance")
+    max_rows = 500
+    return {
+        "baseline_version": baseline.manifest.get("variant_harmonizer_version", ""),
+        "current_version": current.manifest.get("variant_harmonizer_version", ""),
+        "summary": {
+            "variants_old": len(baseline.nodes),
+            "variants_new": len(current.nodes),
+            "variants_added": len(added_ids),
+            "variants_removed": len(removed_ids),
+            "variants_retained": len(shared_ids),
+            "edges_old": len(baseline.edges),
+            "edges_new": len(current.edges),
+            "edges_added": len(current_edge_keys - baseline_edge_keys),
+            "edges_removed": len(baseline_edge_keys - current_edge_keys),
+            "name_changes": len(name_changes),
+            "clinical_significance_changes": len(clinical_significance_changes),
+            "variant_type_changes": len(variant_type_changes),
+            "source_version_changes": len(source_version_changes),
+        },
+        "added_variants": [
+            {f: current.nodes_by_id[vid].get(f, "") for f in node_fields}
+            for vid in added_ids[:max_rows]
+        ],
+        "removed_variants": [
+            {f: baseline.nodes_by_id[vid].get(f, "") for f in node_fields}
+            for vid in removed_ids[:max_rows]
+        ],
+        "name_changes": name_changes[:max_rows],
+        "clinical_significance_changes": clinical_significance_changes[:max_rows],
+        "variant_type_changes": variant_type_changes[:max_rows],
+        "source_version_changes": source_version_changes[:max_rows],
+        "truncation": {
+            "added_variants": {"total": len(added_ids), "shown": min(len(added_ids), max_rows)},
+            "removed_variants": {"total": len(removed_ids), "shown": min(len(removed_ids), max_rows)},
+            "name_changes": {"total": len(name_changes), "shown": min(len(name_changes), max_rows)},
+            "clinical_significance_changes": {"total": len(clinical_significance_changes), "shown": min(len(clinical_significance_changes), max_rows)},
+            "variant_type_changes": {"total": len(variant_type_changes), "shown": min(len(variant_type_changes), max_rows)},
+            "source_version_changes": {"total": len(source_version_changes), "shown": min(len(source_version_changes), max_rows)},
+        },
+    }

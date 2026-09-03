@@ -24,6 +24,7 @@
         <button class="variant-tab-btn" data-tab="concepts" type="button">Concepts</button>
         <button class="variant-tab-btn" data-tab="graph" type="button">Graph</button>
         <button class="variant-tab-btn" data-tab="download" type="button">Download</button>
+        <button class="variant-tab-btn" data-tab="changes" type="button">Changes</button>
         <button class="variant-tab-btn" data-tab="api" type="button">API</button>
         <button class="variant-tab-btn" data-tab="resolver" type="button">Resolver</button>
     </nav>
@@ -123,6 +124,20 @@
         </div>
     </section>
 
+    <!-- Changes tab -->
+    <section class="variant-tab-panel" data-panel="changes">
+        <div class="changes-controls">
+            <label>From
+                <select id="changesFromVersion" class="filter-select-sm"></select>
+            </label>
+            <label>To
+                <select id="changesToVersion" class="filter-select-sm"></select>
+            </label>
+            <button type="button" class="btn btn-sm" id="changesCompareBtn">Compare versions</button>
+        </div>
+        <div id="changesContent" class="changes-loading">Loading version diff...</div>
+    </section>
+
     <section class="variant-tab-panel" data-panel="api">
         <div class="variant-panel">
             <h2>Variant Harmonizer API</h2>
@@ -203,6 +218,8 @@
 .vr-status-badge.local_only { background:#3b82f6; color:#fff; }
 .vr-status-badge.api_only { background:#a855f7; color:#fff; }
 .vr-status-badge.not_found { background:#64748b; color:#e2e8f0; }
+.vr-status-badge.empty { background:#475569; color:#e2e8f0; }
+.vr-status-badge.error { background:#dc2626; color:#fff; }
 .resolver-checkbox { display:inline-flex; align-items:center; gap:0.3rem; font-size:0.78rem; color:var(--text); cursor:pointer; user-select:none; }
 .resolver-checkbox input[type="checkbox"] { accent-color:var(--accent,#14b8a6); width:14px; height:14px; }
 .ncats-prop-panel { border:1px solid var(--border,#e2e8f0); border-radius:6px; padding:0.6rem 0.8rem; margin-bottom:0.75rem; background:var(--bg-secondary,#f8fafc); }
@@ -223,9 +240,11 @@ let variantCy = null;
 let variantStatsCache = null;
 const defaultColumns = ["variant_id", "primary_id", "name", "biolink_category", "variant_type", "dbsnp_id", "clinvar_variation_id", "clinvar_allele_id", "uniprot_id", "uniprot_feature_id", "protein_name", "protein_position", "amino_acid_change", "gene_symbol", "gene_curie", "assembly", "chromosome", "position", "risk_allele", "clinical_significance", "source_review_status", "source_namespaces", "equivalence_scope", "quality_note"];
 
+let variantChangesLoaded = false;
 function setVariantTab(tab) {
     document.querySelectorAll(".variant-tab-btn").forEach(btn => btn.classList.toggle("active", btn.dataset.tab === tab));
     document.querySelectorAll(".variant-tab-panel").forEach(panel => panel.classList.toggle("active", panel.dataset.panel === tab));
+    if (tab === "changes" && !variantChangesLoaded) { variantChangesLoaded = true; loadVariantChangesTab(); }
 }
 
 document.querySelectorAll(".variant-tab-btn").forEach(btn => btn.addEventListener("click", () => setVariantTab(btn.dataset.tab)));
@@ -281,7 +300,7 @@ async function runVariantSearch(page = 1) {
         per_page: 50,
     });
     const resp = await fetch(`${rootPath}/variant-id-qa/api/search?${params}`);
-    if (!resp.ok) return;
+    if (!resp.ok) { document.getElementById("variantRows").innerHTML = `<tr><td colspan="6">Search error: ${resp.status}</td></tr>`; return; }
     const data = await resp.json();
     variantLastPage = data.pages || 0;
     document.getElementById("variantRows").innerHTML = data.rows.map(row => `<tr>
@@ -308,9 +327,9 @@ async function loadVariantGraph(ids) {
         include_disagreements: document.getElementById("variantShowDisagreements")?.checked ? "true" : "false",
     });
     const resp = await fetch(`${rootPath}/variant-id-qa/api/graph?${params}`);
-    if (!resp.ok) return;
+    if (!resp.ok) { document.getElementById("variantGraphLabel").textContent = `Graph error: ${resp.status}`; return; }
     const payload = await resp.json();
-    document.getElementById("variantGraphLabel").textContent = `${payload.node_count} nodes · ${payload.edge_count} edges` + (payload.not_found.length ? ` · not found: ${payload.not_found.join(", ")}` : "");
+    document.getElementById("variantGraphLabel").textContent = `${payload.node_count} nodes · ${payload.edge_count} edges` + ((payload.not_found && payload.not_found.length) ? ` · not found: ${payload.not_found.join(", ")}` : "");
     const elements = [...payload.elements.nodes, ...payload.elements.edges];
     if (variantCy) variantCy.destroy();
     variantCy = cytoscape({
@@ -342,6 +361,8 @@ function setupVariantColumns() {
 }
 
 document.getElementById("variantSearchBtn").addEventListener("click", () => runVariantSearch(1));
+document.getElementById("variantSearch").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); runVariantSearch(1); } });
+document.getElementById("variantGeneFilter").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); runVariantSearch(1); } });
 document.getElementById("variantPrevPage").addEventListener("click", () => { if (variantPage > 1) runVariantSearch(variantPage - 1); });
 document.getElementById("variantNextPage").addEventListener("click", () => { if (!variantLastPage || variantPage < variantLastPage) runVariantSearch(variantPage + 1); });
 document.getElementById("variantOpenGraph").addEventListener("click", () => loadVariantGraph());
@@ -487,7 +508,17 @@ if (document.getElementById("variantOpenIds").value.trim()) loadVariantGraph();
                 html += `<dl class="vr-kv">`;
                 const fields = ["variant_id","primary_id","name","gene_symbol","dbsnp_id","clinvar_variation_id","clinical_significance","source_namespaces","equivalence_scope"];
                 fields.forEach(k => {
-                    if (hit[k]) html += `<dt>${escapeHtml(k)}</dt><dd>${escapeHtml(hit[k])}</dd>`;
+                    let val = hit[k];
+                    /* Show source-aware context when clinical significance is empty */
+                    if (k === "clinical_significance" && !val) {
+                        const src = (hit.source_namespaces || "").toLowerCase();
+                        if (src.includes("gwascatalog")) val = "Association only (GWAS Catalog)";
+                        else if (src.includes("uniprot")) val = "Protein variant annotation (UniProt)";
+                        else if (src.includes("omim")) val = "OMIM curated allelic variant";
+                        if (val) html += `<dt>${escapeHtml(k)}</dt><dd style="color:var(--text-muted,#94a3b8);font-style:italic;">${escapeHtml(val)}</dd>`;
+                        return;
+                    }
+                    if (val) html += `<dt>${escapeHtml(k)}</dt><dd>${escapeHtml(val)}</dd>`;
                 });
                 html += `</dl>`;
                 html += `<button class="btn btn-sm vr-open-graph" data-id="${escapeHtml(hit.variant_id)}" style="margin-top:0.3rem;">Open in Graph</button>`;
@@ -529,8 +560,10 @@ if (document.getElementById("variantOpenIds").value.trim()) loadVariantGraph();
 
                 /* Population Frequencies */
                 const freqKeys = ["gnomad_exome.af.af","gnomad_exome.af.af_afr","gnomad_exome.af.af_eas","gnomad_exome.af.af_nfe","gnomad_genome.af.af"];
-                const freqEntries = freqKeys.filter(k => hit[k]).map(k => [k, hit[k]]);
-                if (freqEntries.length) {
+                /* Show all requested freq keys; distinguish 0 from absent */
+                const freqEntries = freqKeys.map(k => [k, hit[k]]);
+                const anyFreq = freqEntries.some(([,v]) => v != null);
+                if (anyFreq) {
                     html += `<div class="vr-section"><h5>Population Frequencies</h5><table class="vr-freq-table"><tr>`;
                     freqEntries.forEach(([k]) => {
                         const label = (vrFieldCatalog.find(f => f.key === k) || {}).label || k;
@@ -538,8 +571,14 @@ if (document.getElementById("variantOpenIds").value.trim()) loadVariantGraph();
                     });
                     html += `</tr><tr>`;
                     freqEntries.forEach(([,v]) => {
-                        const num = parseFloat(v);
-                        html += `<td>${isNaN(num) ? escapeHtml(v) : num.toExponential(2)}</td>`;
+                        if (v == null) {
+                            html += `<td style="color:var(--text-muted,#64748b);" title="Not in gnomAD">\u2014</td>`;
+                        } else {
+                            const num = parseFloat(v);
+                            if (isNaN(num)) html += `<td>${escapeHtml(v)}</td>`;
+                            else if (num === 0) html += `<td title="Present in gnomAD at zero frequency">0</td>`;
+                            else html += `<td>${num < 0.001 ? num.toExponential(2) : num.toPrecision(3)}</td>`;
+                        }
                     });
                     html += `</tr></table></div>`;
                 }
@@ -552,18 +591,25 @@ if (document.getElementById("variantOpenIds").value.trim()) loadVariantGraph();
                     {key:"dbnsfp.revel.score", hi:0.5, med:0.25, dir:"high"},
                     {key:"dbnsfp.metalr.score", hi:0.5, med:0.25, dir:"high"},
                 ];
-                const scoreEntries = scoreKeys.filter(s => hit[s.key]);
+                const scoreEntries = scoreKeys.filter(s => hit[s.key] != null);
                 if (scoreEntries.length) {
                     html += `<div class="vr-section"><h5>Deleteriousness Scores</h5><dl class="vr-kv">`;
                     scoreEntries.forEach(s => {
                         const label = (vrFieldCatalog.find(f => f.key === s.key) || {}).label || s.key;
-                        const v = parseFloat(hit[s.key]);
+                        const raw = String(hit[s.key]);
+                        /* Parse all pipe-delimited values; use worst-case for badge */
+                        const vals = raw.split("|").map(Number).filter(n => !isNaN(n));
+                        const worst = vals.length ? (s.dir === "high" ? Math.max(...vals) : Math.min(...vals)) : NaN;
                         let badge = "neutral";
-                        if (!isNaN(v)) {
-                            if (s.dir === "high") badge = v >= s.hi ? "high" : (v >= s.med ? "medium" : "low");
-                            else badge = v <= s.hi ? "high" : (v <= s.med ? "medium" : "low");
+                        if (!isNaN(worst)) {
+                            if (s.dir === "high") badge = worst >= s.hi ? "high" : (worst >= s.med ? "medium" : "low");
+                            else badge = worst <= s.hi ? "high" : (worst <= s.med ? "medium" : "low");
                         }
-                        html += `<dt>${escapeHtml(label)}</dt><dd><span class="vr-score-badge ${badge}">${escapeHtml(hit[s.key])}</span></dd>`;
+                        /* Show single value directly, multi-value as range */
+                        const display = vals.length > 1
+                            ? `${Math.min(...vals).toPrecision(3)} \u2013 ${Math.max(...vals).toPrecision(3)} (${vals.length} transcripts)`
+                            : escapeHtml(raw);
+                        html += `<dt>${escapeHtml(label)}</dt><dd><span class="vr-score-badge ${badge}">${display}</span></dd>`;
                     });
                     html += `</dl></div>`;
                 }
@@ -589,25 +635,41 @@ if (document.getElementById("variantOpenIds").value.trim()) loadVariantGraph();
     }
 
     /* ── Export ───────────────────────────────────────────────────────── */
+    function vrStringify(v) {
+        if (v == null) return "";
+        if (typeof v === "object") return JSON.stringify(v);
+        return String(v);
+    }
+
     function vrFlattenResult(r) {
-        const flat = { query: r.query, query_type: r.query_type, status: r.status };
-        /* Local hit fields */
-        if (r.local_hits && r.local_hits.length) {
-            const best = r.local_hits[0];
-            for (const [k,v] of Object.entries(best)) flat[`local_${k}`] = v;
-        }
-        /* MyVariant fields */
-        const mv = r.myvariant;
-        if (mv) {
-            const hit = mv.hits ? mv.hits[0] : mv;
-            if (hit) {
-                for (const [k,v] of Object.entries(hit)) {
-                    if (k.startsWith("_")) continue;
-                    flat[`myvariant_${k.replace(/\./g, "_")}`] = v;
+        /* When multiple local hits or MyVariant hits exist, produce one row
+           per combination so nothing is silently dropped on export. */
+        const base = { query: r.query, query_type: r.query_type, status: r.status };
+        const localHits = (r.local_hits && r.local_hits.length) ? r.local_hits : [null];
+        const mvHits = r.myvariant
+            ? (r.myvariant.hits ? r.myvariant.hits : [r.myvariant])
+            : [null];
+
+        const rows = [];
+        localHits.forEach((lh, li) => {
+            mvHits.forEach((mh, mi) => {
+                const flat = { ...base };
+                if (localHits.length > 1) flat.local_hit_index = li + 1;
+                if (lh) {
+                    for (const [k,v] of Object.entries(lh))
+                        flat[`local_${k}`] = vrStringify(v);
                 }
-            }
-        }
-        return flat;
+                if (mh) {
+                    if (mvHits.length > 1) flat.myvariant_hit_index = mi + 1;
+                    for (const [k,v] of Object.entries(mh)) {
+                        if (k.startsWith("_")) continue;
+                        flat[`myvariant_${k.replace(/\./g, "_")}`] = vrStringify(v);
+                    }
+                }
+                rows.push(flat);
+            });
+        });
+        return rows;
     }
 
     function vrExport() {
@@ -618,13 +680,15 @@ if (document.getElementById("variantOpenIds").value.trim()) loadVariantGraph();
         if (fmt === "json") {
             const blob = new Blob([JSON.stringify(vrLastResults, null, 2)], {type: "application/json"});
             const a = document.createElement("a");
-            a.href = URL.createObjectURL(blob);
+            const url = URL.createObjectURL(blob);
+            a.href = url;
             a.download = "variant_resolver_results.json";
             a.click();
+            setTimeout(() => URL.revokeObjectURL(url), 5000);
             return;
         }
 
-        const rows = results.map(vrFlattenResult);
+        const rows = results.flatMap(vrFlattenResult);
         const allKeys = [...new Set(rows.flatMap(Object.keys))];
         const sep = fmt === "csv" ? "," : "\t";
         const esc = v => {
@@ -635,12 +699,17 @@ if (document.getElementById("variantOpenIds").value.trim()) loadVariantGraph();
         rows.forEach(row => lines.push(allKeys.map(k => esc(row[k])).join(sep)));
         const blob = new Blob([lines.join("\n")], {type: fmt === "csv" ? "text/csv" : "text/tab-separated-values"});
         const a = document.createElement("a");
-        a.href = URL.createObjectURL(blob);
+        const url = URL.createObjectURL(blob);
+        a.href = url;
         a.download = `variant_resolver_results.${fmt}`;
         a.click();
+        setTimeout(() => URL.revokeObjectURL(url), 5000);
     }
 
     /* ── Event wiring ────────────────────────────────────────────────── */
+    document.getElementById("vrInput").addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); vrResolve(); }
+    });
     document.getElementById("vrResolveBtn").addEventListener("click", vrResolve);
     document.getElementById("vrClearBtn").addEventListener("click", () => {
         document.getElementById("vrInput").value = "";
@@ -664,5 +733,149 @@ if (document.getElementById("variantOpenIds").value.trim()) loadVariantGraph();
     /* Also load immediately if resolver is the active tab */
     if (initialTab === "resolver") { vrFieldsLoaded = true; vrLoadFieldCatalog(); }
 })();
+
+/* == Variant Changes tab == */
+function variantFormatVersionOption(v) {
+    const date = v.updated_at ? ` (${String(v.updated_at).slice(0, 10)})` : "";
+    const current = v.current ? " current" : "";
+    return `v${v.version}${date}${current}`;
+}
+
+function variantPopulateVersionSelect(select, versions, selectedVersion) {
+    select.innerHTML = "";
+    versions.forEach(v => {
+        const opt = document.createElement("option");
+        opt.value = v.version;
+        opt.textContent = variantFormatVersionOption(v);
+        if (v.version === selectedVersion) opt.selected = true;
+        select.appendChild(opt);
+    });
+}
+
+function variantDisplayVersion(value) {
+    const text = String(value || "").trim();
+    if (!text) return "";
+    if (text.startsWith("v")) return text;
+    return `v${text}`;
+}
+
+function renderVariantSourceVersionChanges(rows) {
+    if (!rows || rows.length === 0) return "";
+    let html = `<div class="changes-section expanded">`;
+    html += `<h3>Source Version Changes</h3>`;
+    html += `<div class="changes-section-body"><table class="changes-table"><thead><tr>`;
+    html += `<th>Source</th><th>From</th><th>To</th></tr></thead><tbody>`;
+    rows.forEach(row => {
+        html += `<tr>`;
+        html += `<td>${escapeHtml(row.source_name || "")}</td>`;
+        html += `<td>${escapeHtml(row.old_source_version || "")}</td>`;
+        html += `<td>${escapeHtml(row.new_source_version || "")}</td>`;
+        html += `</tr>`;
+    });
+    html += `</tbody></table></div></div>`;
+    return html;
+}
+
+function renderVariantListTable(title, items, columns) {
+    if (!items || items.length === 0) return "";
+    let html = `<div class="changes-section" onclick="this.classList.toggle('expanded')">`;
+    html += `<h3>${escapeHtml(title)} (${items.length})</h3>`;
+    html += `<div class="changes-section-body"><table class="changes-table"><thead><tr>`;
+    columns.forEach(([_key, label]) => { html += `<th>${escapeHtml(label)}</th>`; });
+    html += `</tr></thead><tbody>`;
+    items.forEach(item => {
+        html += `<tr>`;
+        columns.forEach(([key, _label]) => {
+            const cls = key.endsWith("_id") ? ' class="mono"' : "";
+            html += `<td${cls}>${escapeHtml(item[key] || "")}</td>`;
+        });
+        html += `</tr>`;
+    });
+    html += `</tbody></table></div></div>`;
+    return html;
+}
+
+function renderVariantVersionDiff(diff) {
+    const s = diff.summary;
+    let html = `<div class="changes-version-label">Comparing ${escapeHtml(variantDisplayVersion(diff.baseline_version))} &rarr; ${escapeHtml(variantDisplayVersion(diff.current_version))}</div>`;
+    html += `<div class="changes-summary">`;
+    html += `<div class="dash-card"><div class="dash-stat">${s.variants_added.toLocaleString()}</div><div class="dash-label">Variants Added</div></div>`;
+    html += `<div class="dash-card"><div class="dash-stat">${s.variants_removed.toLocaleString()}</div><div class="dash-label">Variants Removed</div></div>`;
+    html += `<div class="dash-card"><div class="dash-stat">${(s.name_changes || 0).toLocaleString()}</div><div class="dash-label">Name Changes</div></div>`;
+    html += `<div class="dash-card"><div class="dash-stat">${(s.clinical_significance_changes || 0).toLocaleString()}</div><div class="dash-label">Clinical Significance Changes</div></div>`;
+    html += `<div class="dash-card"><div class="dash-stat">${(s.variant_type_changes || 0).toLocaleString()}</div><div class="dash-label">Type Changes</div></div>`;
+    html += `<div class="dash-card"><div class="dash-stat">${s.edges_added.toLocaleString()}</div><div class="dash-label">Edges Added</div></div>`;
+    html += `<div class="dash-card"><div class="dash-stat">${s.edges_removed.toLocaleString()}</div><div class="dash-label">Edges Removed</div></div>`;
+    html += `</div>`;
+
+    html += renderVariantSourceVersionChanges(diff.source_version_changes);
+
+    html += renderVariantListTable("Added Variants", diff.added_variants, [
+        ["variant_id", "Variant ID"], ["primary_id", "Primary ID"], ["name", "Name"],
+        ["variant_type", "Type"], ["gene_symbol", "Gene"], ["clinical_significance", "Clinical Significance"],
+    ]);
+
+    html += renderVariantListTable("Removed Variants", diff.removed_variants, [
+        ["variant_id", "Variant ID"], ["primary_id", "Primary ID"], ["name", "Name"],
+        ["variant_type", "Type"], ["gene_symbol", "Gene"], ["clinical_significance", "Clinical Significance"],
+    ]);
+
+    html += renderVariantListTable("Name Changes", diff.name_changes, [
+        ["variant_id", "Variant ID"], ["gene_symbol", "Gene"], ["old_value", "Old Name"], ["new_value", "New Name"],
+    ]);
+
+    html += renderVariantListTable("Clinical Significance Changes", diff.clinical_significance_changes, [
+        ["variant_id", "Variant ID"], ["gene_symbol", "Gene"], ["name", "Name"],
+        ["old_value", "Old Significance"], ["new_value", "New Significance"],
+    ]);
+
+    html += renderVariantListTable("Variant Type Changes", diff.variant_type_changes, [
+        ["variant_id", "Variant ID"], ["gene_symbol", "Gene"], ["old_value", "Old Type"], ["new_value", "New Type"],
+    ]);
+
+    return html;
+}
+
+function loadVariantSelectedVersionDiff() {
+    const container = document.getElementById("changesContent");
+    const fromVersion = document.getElementById("changesFromVersion").value;
+    const toVersion = document.getElementById("changesToVersion").value;
+    container.className = "changes-loading";
+    container.textContent = "Loading version diff...";
+    const params = new URLSearchParams({ from_version: fromVersion, to_version: toVersion });
+    fetch(`${rootPath}/variant-id-qa/api/version-diff?${params}`)
+        .then(r => {
+            if (!r.ok) throw new Error(r.status === 404 ? "Version dataset not available" : "Failed to load version diff");
+            return r.json();
+        })
+        .then(diff => {
+            container.className = "";
+            container.innerHTML = renderVariantVersionDiff(diff);
+        })
+        .catch(err => {
+            container.className = "changes-unavailable";
+            container.innerHTML = escapeHtml(err.message);
+        });
+}
+
+function loadVariantChangesTab() {
+    const container = document.getElementById("changesContent");
+    fetch(`${rootPath}/variant-id-qa/api/versions`)
+        .then(r => {
+            if (!r.ok) throw new Error("No versioned variant datasets available");
+            return r.json();
+        })
+        .then(payload => {
+            const versions = payload.versions || [];
+            if (versions.length < 2) throw new Error("At least two variant graph versions are required for comparison");
+            variantPopulateVersionSelect(document.getElementById("changesFromVersion"), versions, payload.default_from_version);
+            variantPopulateVersionSelect(document.getElementById("changesToVersion"), versions, payload.default_to_version);
+            document.getElementById("changesCompareBtn").onclick = loadVariantSelectedVersionDiff;
+            loadVariantSelectedVersionDiff();
+        })
+        .catch(err => {
+            container.innerHTML = `<div class="changes-unavailable">${escapeHtml(err.message)}</div>`;
+        });
+}
 </script>
 {% endblock %}
