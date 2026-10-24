@@ -48,3 +48,37 @@ def test_active_pharos_graphs_keep_post_adapters_and_views_in_primary_yaml():
         assert primary["output_adapters"][0]["kwargs"]["database_name"] == (
             primary["post_adapters"][0]["kwargs"]["database_name"]
         )
+
+
+def test_active_target_graphs_use_252_consumer_contract_resolvers():
+    expected = {
+        "pharos.yaml": ["TargetConsumerPharosCanonicalResolver"],
+        "impatient_pharos.yaml": ["TargetConsumerPharosCanonicalResolver"],
+        "target_graph.yaml": [
+            "TargetConsumerGeneResolver",
+            "TargetConsumerTranscriptResolver",
+            "TargetConsumerProteinResolver",
+        ],
+    }
+    for name, target_classes in expected.items():
+        with open(f"src/use_cases/pharos/{name}", encoding="utf-8") as stream:
+            config = yaml.safe_load(stream)
+        resolvers = [
+            entry for entry in config["resolvers"]
+            if entry["class"] in target_classes
+        ]
+        assert [entry["class"] for entry in resolvers] == target_classes
+        assert not any(
+            entry["class"] in {
+                "TCRDTargetResolver", "TargetGraphGeneResolver",
+                "TargetGraphTranscriptResolver", "TargetGraphProteinResolver",
+            }
+            for entry in config["resolvers"]
+        )
+        assert all(
+            entry["kwargs"]["data_source"]["snapshot_id"] == "ifx_harmonizers:targets:2.5.2"
+            and entry["kwargs"]["no_match_behavior"] == "Skip"
+            for entry in resolvers
+        )
+        if name != "target_graph.yaml":
+            assert resolvers[0]["kwargs"]["multi_match_behavior"] == "All"
