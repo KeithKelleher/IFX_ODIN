@@ -1,5 +1,7 @@
 import yaml
 
+from src.interfaces.resolver_metadata import resolver_fingerprints_by_type
+
 
 def test_target_graph_current_tdls_exports_read_nested_tdl_metadata():
     config_paths = [
@@ -82,3 +84,23 @@ def test_active_target_graphs_use_252_consumer_contract_resolvers():
         )
         if name != "target_graph.yaml":
             assert resolvers[0]["kwargs"]["multi_match_behavior"] == "All"
+        else:
+            assert all(
+                entry["kwargs"]["multi_match_behavior"] == "Error"
+                for entry in resolvers
+            )
+
+
+def test_tcrd_resolvers_match_source_pharos_graph():
+    with open("src/use_cases/pharos/pharos.yaml", encoding="utf-8") as stream:
+        pharos = yaml.safe_load(stream)
+    with open("src/use_cases/pharos/tcrd.yaml", encoding="utf-8") as stream:
+        tcrd = yaml.safe_load(stream)
+
+    graph_resolvers = resolver_fingerprints_by_type(pharos["resolvers"])
+    mysql_resolvers = resolver_fingerprints_by_type(tcrd["resolvers"])
+    assert mysql_resolvers
+    assert all(
+        graph_resolvers[node_type]["fingerprint"] == expected["fingerprint"]
+        for node_type, expected in mysql_resolvers.items()
+    )

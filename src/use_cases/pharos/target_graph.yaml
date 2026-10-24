@@ -24,6 +24,7 @@ resolvers:
       types:
         - Gene
       no_match_behavior: Skip
+      multi_match_behavior: Error
 
   - label: tg_transcripts
     import: ./src/id_resolvers/target_consumer_resolver.py
@@ -33,6 +34,7 @@ resolvers:
       types:
         - Transcript
       no_match_behavior: Skip
+      multi_match_behavior: Error
 
   - label: tg_proteins
     import: ./src/id_resolvers/target_consumer_resolver.py
@@ -42,6 +44,7 @@ resolvers:
       types:
         - Protein
       no_match_behavior: Skip
+      multi_match_behavior: Error
 
   - label: hcop_ortholog_genes
     import: ./src/id_resolvers/hcop_ortholog_gene_resolver.py
