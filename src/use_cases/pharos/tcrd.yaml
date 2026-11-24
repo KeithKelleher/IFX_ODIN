@@ -38,6 +38,8 @@ resolvers:
       # candidate. id_coverage retains source IDs and target sets, but graph
       # edges and MySQL rows have no per-row ambiguity label. Source Disease
       # node fields can also fan out; do not publish these builds as final.
+      # After a pinned DISEASES release resolves the exact-owner conflicts,
+      # restore multi_match_behavior: Error and rebuild before publication.
       multi_match_behavior: All
 
 input_adapters:

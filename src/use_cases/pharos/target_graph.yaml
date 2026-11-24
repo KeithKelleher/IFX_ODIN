@@ -316,11 +316,6 @@ input_adapters:
     kwargs:
       data_source: disease_ontology:ontology:2026-09-30
 
-  - import: ./src/input_adapters/rdas/diseases.py
-    class: RDASRareDiseaseAdapter
-    kwargs:
-      data_source: {kind: external_dataset_version, snapshot_id: rdas:diseases_graphql:rdas-diseases-graphql}
-
   - import: ./src/input_adapters/disease_harmonizer/consumer.py
     class: DiseaseConsumerPayloadAdapter
     kwargs:
